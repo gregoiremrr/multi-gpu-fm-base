@@ -331,7 +331,7 @@ def parse_nimg(s):
 @click.option('--dropout',          help='Dropout probability', metavar='FLOAT',                type=click.FloatRange(min=0, max=1), default=None)
 @click.option('--t-scale',          help='Scaling for the t embedding', metavar='FLOAT',        type=click.FloatRange(min=0, min_open=True), default=None)
 @click.option('--lr',               help='Learning rate max. (alpha_ref)', metavar='FLOAT',     type=click.FloatRange(min=0, min_open=True), default=None)
-@click.option('--max_clip_norm',    help='Max gradient norm for clipping', metavar='FLOAT',     type=click.FloatRange(min=0, min_open=True), default=None)
+@click.option('--max_clip_norm',    help='Max gradient norm for clipping (0 disables clipping but still logs grad norm)', metavar='FLOAT', type=click.FloatRange(min=0), default=None)
 @click.option('--p-uncond-labels',  help='Prob. of dropping labels for CFG training', metavar='FLOAT', type=click.FloatRange(min=0, max=1), default=None)
 
 # Performance-related options.

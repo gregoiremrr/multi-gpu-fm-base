@@ -161,14 +161,18 @@ def training_loop(
     prev_status_nimg = state.cur_nimg
     cumulative_training_time = 0
     start_nimg = state.cur_nimg
+    start_step = state.cur_step
     stats_jsonl = None
     step_stats = dnnlib.EasyDict()
 
     while True:
         done = (state.cur_nimg >= total_nimg)
 
-        # Report status.
-        if status_nimg is not None and (done or state.cur_nimg % status_nimg == 0) and (state.cur_nimg != start_nimg or start_nimg == 0):
+        # Report status. Also force one report right after the very first
+        # training step so we can sanity-check the run without waiting for a
+        # full status tick.
+        first_step_report = (state.cur_step == start_step + 1)
+        if status_nimg is not None and (done or state.cur_nimg % status_nimg == 0 or first_step_report) and (state.cur_nimg != start_nimg or start_nimg == 0):
             cur_time = time.time()
             state.total_elapsed_time += cur_time - prev_status_time
             cur_process = psutil.Process(os.getpid())
@@ -233,7 +237,13 @@ def training_loop(
                     'sec_per_tick': sec_per_tick,
                     'sec_per_kimg': sec_per_kimg,
                 }
-                main_plots = {'samples': wandb.Image(grid_np)} if grid_np is not None else None
+                plot_caption = (
+                    f"nimg: {state.cur_nimg}, "
+                    f"nstep: {state.cur_step}, "
+                    f"ntime: {dnnlib.util.format_time(state.total_elapsed_time)} "
+                    f"({int(state.total_elapsed_time)}s)"
+                )
+                main_plots = {'samples': wandb.Image(grid_np, caption=plot_caption)} if grid_np is not None else None
 
                 monitoring.log_to_wandb(
                     wandb,
@@ -357,9 +367,12 @@ def training_loop(
                 if force_finite:
                     torch.nan_to_num(param.grad, nan=0.0, posinf=0.0, neginf=0.0, out=param.grad)
 
-        # Clip
-        grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=max_clip_norm)
-        clip_coef = min(1.0, max_clip_norm / (grad_norm.item() + 1e-12))
+        # Clip gradients. A value of `max_clip_norm <= 0` (or None) disables
+        # clipping but we still compute the grad norm for logging by passing
+        # max_norm=inf (the in-place rescale becomes a no-op).
+        clip_norm = max_clip_norm if (max_clip_norm is not None and max_clip_norm > 0) else float('inf')
+        grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=clip_norm)
+        clip_coef = min(1.0, clip_norm / (grad_norm.item() + 1e-12))
 
         optimizer.step()
 
