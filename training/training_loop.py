@@ -38,7 +38,7 @@ def training_loop(
     snapshot_nimg,          # Save model snapshot every N training images. None = disable.
     checkpoint_nimg,        # Save state checkpoint every N training images. None = disable.
     metrics_nimg,           # Compute eval metrics every N training images. None = disable.
-    metrics_kwargs,         # dict(metrics, ref_path, num_samples, max_batch_size). Required if metrics_nimg is set.
+    metrics_kwargs,         # dict(metrics, ref_path, num_samples, mind_num_samples, max_batch_size). Required if metrics_nimg is set.
 
     loss_scaling,           # Loss scaling factor for reducing FP16 under/overflows.
     cudnn_benchmark,        # Enable torch.backends.cudnn.benchmark?
@@ -274,14 +274,26 @@ def training_loop(
                 ema_model.eval()
 
                 metric_start = time.time()
-                dist.print0(f'Computing metrics ({", ".join(metrics_kwargs["metrics"])}) '
-                            f'on {metrics_kwargs["num_samples"]} samples...')
+                # Distinguish per-metric sample budgets in the log line.
+                metric_names = list(metrics_kwargs['metrics'])
+                fid_n = metrics_kwargs['num_samples']
+                mind_n = metrics_kwargs.get('mind_num_samples', 5000)
+                has_frechet = any(m in ('fid', 'fd_dinov2') for m in metric_names)
+                has_mind = any(m in ('mind', 'mind_dinov2') for m in metric_names)
+                samples_desc = []
+                if has_frechet:
+                    samples_desc.append(f'{fid_n} for FID/FD-DINOv2')
+                if has_mind:
+                    samples_desc.append(f'{mind_n} for MIND')
+                dist.print0(f'Computing metrics ({", ".join(metric_names)}) on '
+                            + ', '.join(samples_desc) + ' samples...')
                 metric_results = evaluation.compute_metrics(
                     model=ema_model,
                     encoder=encoder,
                     sampler_kwargs=sampler_kwargs,
                     ref_path=metrics_kwargs['ref_path'],
                     num_samples=metrics_kwargs['num_samples'],
+                    mind_num_samples=metrics_kwargs.get('mind_num_samples', 5000),
                     metrics=metrics_kwargs['metrics'],
                     max_batch_size=metrics_kwargs['max_batch_size'],
                     seed=0, # Fixed seed so each FID tick uses the same noise/labels

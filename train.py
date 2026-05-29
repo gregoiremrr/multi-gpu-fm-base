@@ -237,7 +237,7 @@ def setup_training_config(preset='fm-cifar10', **opts):
     c.snapshot_nimg = opts.snapshot or None
     c.checkpoint_nimg = opts.checkpoint or None
 
-    # Eval metrics (FID / FD-DINOv2).
+    # Eval metrics (FID / FD-DINOv2 / MIND).
     c.metrics_nimg = opts.metrics or None
     if c.metrics_nimg is not None:
         if not opts.metric_ref:
@@ -250,6 +250,7 @@ def setup_training_config(preset='fm-cifar10', **opts):
             metrics=parse_metric_list(opts.metric_names),
             ref_path=opts.metric_ref,
             num_samples=opts.metric_num_samples,
+            mind_num_samples=opts.mind_num_samples,
             max_batch_size=opts.metric_batch_size,
         )
     else:
@@ -350,9 +351,10 @@ def parse_nimg(s):
 @click.option('--checkpoint',       help='Interval of training checkpoints', metavar='NIMG',    type=parse_nimg, default='128Mi', show_default=True)
 
 # Eval-metrics-related options.
-@click.option('--metrics',          help='Interval of FID/FD-DINOv2 evaluation. Disabled by default.', metavar='NIMG', type=parse_nimg, default=None, show_default=True)
-@click.option('--metric-names',     help='Comma-separated list of metrics to compute', metavar='LIST', type=str, default='fid', show_default=True)
-@click.option('--metric-num-samples', help='Number of generated samples to use for the metric', metavar='INT', type=click.IntRange(min=2), default=10000, show_default=True)
+@click.option('--metrics',          help='Interval of FID/FD-DINOv2/MIND evaluation. Disabled by default.', metavar='NIMG', type=parse_nimg, default=None, show_default=True)
+@click.option('--metric-names',     help='Comma-separated list of metrics to compute (fid, fd_dinov2, mind, mind_dinov2)', metavar='LIST', type=str, default='fid', show_default=True)
+@click.option('--metric-num-samples', help='Number of generated samples for Fr\u00e9chet metrics (fid, fd_dinov2)', metavar='INT', type=click.IntRange(min=2), default=10000, show_default=True)
+@click.option('--mind-num-samples', help='Number of generated samples for MIND metrics (mind, mind_dinov2)', metavar='INT', type=click.IntRange(min=2), default=5000, show_default=True)
 @click.option('--metric-ref',       help='Reference statistics .pkl/.npz', metavar='PATH', type=str, default='fid-refs/cifar10.pkl', show_default=True)
 @click.option('--metric-batch-size',help='Per-rank batch size for metric sampling/feature extraction', metavar='INT', type=click.IntRange(min=1), default=64, show_default=True)
 

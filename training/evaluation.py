@@ -1,9 +1,16 @@
-"""Distributed metric (FID / FD-DINOv2) computation during training.
+"""Distributed metric (FID / FD-DINOv2 / MIND) computation during training.
 
 Reuses the building blocks in `calculate_metrics.py` (feature detector,
-distributed accumulation of mu/sigma, scoring against a reference) but
-plugs in an *online* image iterator that samples from the current EMA
-model on each rank, instead of reading images from disk.
+distributed accumulation of mu/sigma OR raw features, scoring against a
+reference) but plugs in an *online* image iterator that samples from the
+current EMA model on each rank, instead of reading images from disk.
+
+MIND-style metrics ('mind', 'mind_dinov2') optionally use a different
+sample count (``mind_num_samples``) than Fréchet metrics ('fid',
+'fd_dinov2'). In that case we generate ``max(num_samples,
+mind_num_samples)`` images once per eval, and each metric consumes the
+prefix of features it needs -- so the extra sampling cost is zero when
+``mind_num_samples <= num_samples``.
 """
 
 from tqdm import tqdm
@@ -100,15 +107,31 @@ def compute_metrics(
     encoder,                                # Encoder used to decode latents into raw pixels.
     sampler_kwargs,                         # Sampler config (same as monitoring grid).
     ref_path,                               # Path to a reference statistics .pkl/.npz.
-    num_samples     = 10_000,               # How many images to generate for the eval.
-    metrics         = ('fid',),             # Which metrics to compute.
-    max_batch_size  = 64,                   # Per-rank batch size for sampling and feature extraction.
-    seed            = 0,                    # Seed for noise/labels.
-    device          = torch.device('cuda'),
+    num_samples         = 10_000,           # # images for FID / FD-DINOv2.
+    mind_num_samples    = 5_000,            # # images for MIND / MIND-DINOv2 (paper recommends 5k).
+    metrics             = ('fid',),         # Which metrics to compute.
+    max_batch_size      = 64,               # Per-rank batch size for sampling and feature extraction.
+    seed                = 0,                # Seed for noise/labels.
+    mind_n_projections  = None,             # None = use calculate_metrics.MIND_DEFAULT_N_PROJECTIONS.
+    mind_seed           = None,             # None = use calculate_metrics.MIND_DEFAULT_SEED.
+    device              = torch.device('cuda'),
 ):
     metrics = list(metrics)
     if not metrics:
         return {} if dist.get_rank() == 0 else None
+
+    # Per-metric sample budgets. We always generate max(budgets) images and
+    # let each metric truncate its own feature stream so that, with default
+    # settings (num_samples=10k, mind_num_samples=5k), MIND adds zero extra
+    # sampling cost on top of FID.
+    metric_num_samples = {}
+    for m in metrics:
+        spec = calculate_metrics.metric_specs.get(m)
+        if spec is not None and spec.stat_type == 'features':
+            metric_num_samples[m] = mind_num_samples
+        else:
+            metric_num_samples[m] = num_samples
+    total_num_samples = max(metric_num_samples.values())
 
     was_training = model.training
     model.eval()
@@ -117,7 +140,7 @@ def compute_metrics(
         model=model,
         encoder=encoder,
         sampler_kwargs=sampler_kwargs,
-        num_samples=num_samples,
+        num_samples=total_num_samples,
         max_batch_size=max_batch_size,
         seed=seed,
         device=device,
@@ -128,6 +151,7 @@ def compute_metrics(
         metrics=metrics,
         verbose=True,
         device=device,
+        metric_num_samples=metric_num_samples,
     )
 
     final_r = None
@@ -137,11 +161,17 @@ def compute_metrics(
     results = None
     if dist.get_rank() == 0:
         ref = calculate_metrics.load_stats(ref_path, verbose=True)
+        kw = {}
+        if mind_n_projections is not None:
+            kw['mind_n_projections'] = mind_n_projections
+        if mind_seed is not None:
+            kw['mind_seed'] = mind_seed
         results = calculate_metrics.calculate_metrics_from_stats(
             stats=final_r.stats,
             ref=ref,
             metrics=metrics,
             verbose=True,
+            **kw,
         )
 
     if dist.get_world_size() > 1:
