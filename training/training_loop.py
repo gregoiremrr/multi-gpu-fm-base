@@ -311,7 +311,7 @@ def training_loop(
                             cur_step=state.cur_step,
                             cur_nimg=state.cur_nimg,
                             elapsed_time=state.total_elapsed_time,
-                            main_metrics=metric_results,
+                            main_eval_metrics=metric_results,
                             metrics={'metric_eval_sec': metric_elapsed},
                         )
                 # Don't count the eval time as training time on the next tick.

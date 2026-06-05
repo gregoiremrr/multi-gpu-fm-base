@@ -1,13 +1,15 @@
 """W&B monitoring utilities.
 
-Logged values are split into four categories:
-  - main_metrics / metrics : scalars, plotted against three x-axes
-                             (training_steps, nimgs, time).
+Logged values are split into the following categories:
+  - main_metrics / main_eval_metrics / metrics : scalars, plotted against
+                             three x-axes (training_steps, nimgs, time).
   - main_plots   / plots   : media (images, etc.), plotted against
                              training_steps only.
 
 Anything tagged "main_*" is intended to land on the run's main W&B page;
-the rest live in their own panels.
+the rest live in their own panels. `main_eval_metrics` is reserved for
+the (expensive) evaluation metrics (FID / FD-DINOv2 / MIND) so they get
+their own section separate from the per-tick training metrics.
 """
 
 import numpy as np
@@ -18,7 +20,7 @@ from torch_utils import misc
 
 #----------------------------------------------------------------------------
 
-_METRIC_CATEGORIES = ('main_metrics', 'metrics')
+_METRIC_CATEGORIES = ('main_metrics', 'main_eval_metrics', 'metrics')
 _PLOT_CATEGORIES = ('main_plots', 'plots')
 _X_AXES = ('training_steps', 'nimgs', 'time')
 
@@ -43,6 +45,7 @@ def log_to_wandb(
     cur_nimg,
     elapsed_time,
     main_metrics=None,
+    main_eval_metrics=None,
     metrics=None,
     main_plots=None,
     plots=None,
@@ -55,6 +58,9 @@ def log_to_wandb(
     for k, v in (main_metrics or {}).items():
         for axis in _X_AXES:
             log_dict[f'main_metrics/by_{axis}/{k}'] = v
+    for k, v in (main_eval_metrics or {}).items():
+        for axis in _X_AXES:
+            log_dict[f'main_eval_metrics/by_{axis}/{k}'] = v
     for k, v in (metrics or {}).items():
         for axis in _X_AXES:
             log_dict[f'metrics/by_{axis}/{k}'] = v
