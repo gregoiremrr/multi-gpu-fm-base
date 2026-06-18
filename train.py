@@ -61,7 +61,7 @@ config_presets = {
     'fm-cifar10': dnnlib.EasyDict(
         dataset='cifar10',
         cond=True,
-        total_nimg=200_000 * 64,   # 200k steps * batch_size = total_nimg
+        total_nsteps=50_000,       # == old total_nimg (200_000*64) / batch_size
         batch_size=256,
         pred='v',
         t_scale=1000,
@@ -69,7 +69,7 @@ config_presets = {
         channels=128,
         dropout=0.0,
         lr=1e-3,
-        warmup_nimg=5_000 * 256,
+        warmup_nsteps=5_000,
         max_clip_norm=1.0,
         interpolant_kwargs=dnnlib.EasyDict(
             class_name='training.interpolants.LinearInterpolant',
@@ -86,7 +86,7 @@ config_presets = {
     'fm-cifar10-xpred': dnnlib.EasyDict(
         dataset='cifar10',
         cond=True,
-        total_nimg=200_000 * 64,
+        total_nsteps=50_000,       # == old total_nimg (200_000*64) / batch_size
         batch_size=256,
         pred='x',
         t_scale=1000,
@@ -94,7 +94,7 @@ config_presets = {
         channels=128,
         dropout=0.0,
         lr=1e-3,
-        warmup_nimg=5_000 * 256,
+        warmup_nsteps=5_000,
         max_clip_norm=1.0,
         interpolant_kwargs=dnnlib.EasyDict(
             class_name='training.interpolants.LinearInterpolant',
@@ -111,7 +111,7 @@ config_presets = {
     'fm-cifar10-trig': dnnlib.EasyDict(
         dataset='cifar10',
         cond=True,
-        total_nimg=400_000 * 512,
+        total_nsteps=400_000,
         batch_size=512,
         pred='v',
         t_scale=1000,
@@ -119,7 +119,7 @@ config_presets = {
         channels=128,
         dropout=0.13,
         lr=1e-3,
-        warmup_nimg=20_000 * 512,
+        warmup_nsteps=20_000,
         max_clip_norm=1.0,
         interpolant_kwargs=dnnlib.EasyDict(
             class_name='training.interpolants.TrigInterpolant',
@@ -198,8 +198,10 @@ def setup_training_config(preset='fm-cifar10', **opts):
         raise click.ClickException(f'--data: Unsupported channel count {dataset_channels}')
 
     # Hyperparameters.
-    c.total_nimg = opts.total_nimg
     c.batch_size = opts.batch_size
+    # Durations are specified in optimizer steps; the training loop and LR
+    # scheduler work in image counts, so convert here (1 step == batch_size images).
+    c.total_nimg = opts.total_nsteps * opts.batch_size
     c.model_kwargs = dnnlib.EasyDict(
         class_name='training.model.FlowMatchingModel',
         pred=opts.pred,
@@ -220,8 +222,8 @@ def setup_training_config(preset='fm-cifar10', **opts):
     c.lr_kwargs = dnnlib.EasyDict(
         **opts.lr_scheduler_kwargs,
         base_lr=opts.lr,
-        total_nimg=opts.total_nimg,
-        warmup_nimg=opts.warmup_nimg,
+        total_nimg=c.total_nimg,
+        warmup_nimg=opts.warmup_nsteps * opts.batch_size,
     )
     c.sampler_kwargs = dnnlib.EasyDict(**opts.sampler_kwargs)
     c.max_clip_norm = opts.max_clip_norm
@@ -232,13 +234,13 @@ def setup_training_config(preset='fm-cifar10', **opts):
     c.cudnn_benchmark = opts.bench
     c.force_finite = opts.force_finite
 
-    # I/O-related options.
-    c.status_nimg = opts.status or None
-    c.snapshot_nimg = opts.snapshot or None
-    c.checkpoint_nimg = opts.checkpoint or None
+    # I/O-related options. (Intervals are given in optimizer steps.)
+    c.status_nimg = opts.status * opts.batch_size if opts.status else None
+    c.snapshot_nimg = opts.snapshot * opts.batch_size if opts.snapshot else None
+    c.checkpoint_nimg = opts.checkpoint * opts.batch_size if opts.checkpoint else None
 
-    # Eval metrics (FID / FD-DINOv2 / MIND).
-    c.metrics_nimg = opts.metrics or None
+    # Eval metrics (FID / FD-DINOv2 / MIND). (Interval is given in optimizer steps.)
+    c.metrics_nimg = opts.metrics * opts.batch_size if opts.metrics else None
     if c.metrics_nimg is not None:
         if not opts.metric_ref:
             raise click.ClickException('--metrics requires --metric-ref')
@@ -296,12 +298,13 @@ def launch_training(run_dir, pretrained_pkl, c):
     training.training_loop.training_loop(run_dir=run_dir, pretrained_pkl=pretrained_pkl, **c)
 
 #----------------------------------------------------------------------------
-# Parse an integer with optional power-of-two suffix:
+# Parse an integer (image count or optimizer-step count) with optional
+# power-of-two suffix:
 # 'Ki' = kibi = 2^10
 # 'Mi' = mebi = 2^20
 # 'Gi' = gibi = 2^30
 
-def parse_nimg(s):
+def parse_count(s):
     if isinstance(s, int):
         return s
     if s.endswith('Ki'):
@@ -325,8 +328,8 @@ def parse_nimg(s):
 
 # Hyperparameters. (None by default => use the preset value)
 @click.option('--cond',             help='Train class-conditional model', metavar='BOOL',       type=bool, default=None)
-@click.option('--total_nimg',       help='Training duration', metavar='NIMG',                   type=parse_nimg, default=None)
-@click.option('--batch-size',       help='Total batch size', metavar='NIMG',                    type=parse_nimg, default=None)
+@click.option('--total_nsteps',     help='Training duration in optimizer steps', metavar='STEPS', type=parse_count, default=None)
+@click.option('--batch-size',       help='Total batch size', metavar='NIMG',                    type=parse_count, default=None)
 @click.option('--pred',             help='Quantity predicted by the network', metavar='x/v',    type=str, default=None)
 @click.option('--channels',         help='Channel multiplier', metavar='INT',                   type=click.IntRange(min=64), default=None)
 @click.option('--dropout',          help='Dropout probability', metavar='FLOAT',                type=click.FloatRange(min=0, max=1), default=None)
@@ -336,7 +339,7 @@ def parse_nimg(s):
 @click.option('--p-uncond-labels',  help='Prob. of dropping labels for CFG training', metavar='FLOAT', type=click.FloatRange(min=0, max=1), default=None)
 
 # Performance-related options.
-@click.option('--max-batch-gpu',    help='Limit batch size per GPU', metavar='NIMG',            type=parse_nimg, default=None, show_default=True)
+@click.option('--max-batch-gpu',    help='Limit batch size per GPU', metavar='NIMG',            type=parse_count, default=None, show_default=True)
 @click.option('--pin-memory',       help='Use pinned memory in the dataloader', metavar='BOOL', default=True, show_default=True)
 @click.option('--num-workers',      help='Number of workers in the dataloader', metavar='INT',  type=int, default=2, show_default=True)
 @click.option('--prefetch_factor',  help='Number of batches for each worker', metavar='INT',    type=int, default=2, show_default=True)
@@ -346,12 +349,12 @@ def parse_nimg(s):
 @click.option('--force-finite',     help='Zero NaN/Inf gradients before optimizer step',        metavar='BOOL', type=bool, default=True, show_default=True)
 
 # I/O-related options.
-@click.option('--status',           help='Interval of status prints', metavar='NIMG',           type=parse_nimg, default='128Ki', show_default=True)
-@click.option('--snapshot',         help='Interval of network snapshots', metavar='NIMG',       type=parse_nimg, default='8Mi', show_default=True)
-@click.option('--checkpoint',       help='Interval of training checkpoints', metavar='NIMG',    type=parse_nimg, default='128Mi', show_default=True)
+@click.option('--status',           help='Interval of status prints (optimizer steps)', metavar='STEPS',     type=parse_count, default='512', show_default=True)
+@click.option('--snapshot',         help='Interval of network snapshots (optimizer steps)', metavar='STEPS', type=parse_count, default='32Ki', show_default=True)
+@click.option('--checkpoint',       help='Interval of training checkpoints (optimizer steps)', metavar='STEPS', type=parse_count, default='512Ki', show_default=True)
 
 # Eval-metrics-related options.
-@click.option('--metrics',          help='Interval of FID/FD-DINOv2/MIND evaluation. Disabled by default.', metavar='NIMG', type=parse_nimg, default=None, show_default=True)
+@click.option('--metrics',          help='Interval of FID/FD-DINOv2/MIND evaluation in optimizer steps. Disabled by default.', metavar='STEPS', type=parse_count, default=None, show_default=True)
 @click.option('--metric-names',     help='Comma-separated list of metrics to compute (fid, fd_dinov2, mind, mind_dinov2)', metavar='LIST', type=str, default='fid', show_default=True)
 @click.option('--metric-num-samples', help='Number of generated samples for Fr\u00e9chet metrics (fid, fd_dinov2)', metavar='INT', type=click.IntRange(min=2), default=10000, show_default=True)
 @click.option('--mind-num-samples', help='Number of generated samples for MIND metrics (mind, mind_dinov2)', metavar='INT', type=click.IntRange(min=2), default=5000, show_default=True)

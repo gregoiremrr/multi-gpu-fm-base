@@ -8,6 +8,6 @@ torchrun --standalone --nproc_per_node=2 train.py \
     --preset=fm-cifar10-trig \
     --max-batch-gpu=512 \
     --no-fp16 \
-    --status=20Ki \
-    --snapshot=256Ki \
-    --checkpoint=512Ki
+    --status=40 \
+    --snapshot=512 \
+    --checkpoint=1Ki

@@ -13,10 +13,10 @@ torchrun --standalone --nproc_per_node=2 train.py \
     --preset=fm-cifar10-trig \
     --max-batch-gpu=256 \
     --no-fp16 \
-    --status=20Ki \
-    --snapshot=1Mi \
-    --checkpoint=2Mi \
-    --metrics=6Mi \
+    --status=40 \
+    --snapshot=2Ki \
+    --checkpoint=4Ki \
+    --metrics=12Ki \
     --metric-names=fid \
     --metric-num-samples=10000 \
     --metric-ref=fid-refs/cifar10.pkl \
