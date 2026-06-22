@@ -64,6 +64,9 @@ def training_loop(
 
     num_accumulation_rounds = batch_gpu_total // batch_gpu
     assert batch_size == batch_gpu * num_accumulation_rounds * dist.get_world_size()
+    dist.print0(f'Batch size: total {batch_size}, per-GPU {batch_gpu_total} '
+                f'(micro-batch {batch_gpu} x {num_accumulation_rounds} accumulation rounds), '
+                f'GPUs {dist.get_world_size()}')
     assert total_nimg % batch_size == 0
     assert status_nimg is None or status_nimg % batch_size == 0
     assert snapshot_nimg is None or snapshot_nimg % batch_size == 0
