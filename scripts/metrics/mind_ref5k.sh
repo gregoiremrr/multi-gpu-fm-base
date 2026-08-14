@@ -15,7 +15,7 @@ export NCCL_SOCKET_IFNAME=lo
 export NCCL_IB_DISABLE=1
 
 torchrun --standalone --nproc_per_node=2 calculate_metrics.py ref \
-    --data=datasets/cifar10.zip \
-    --dest=fid-refs/cifar10.pkl \
+    --data=../datasets/cifar10.zip \
+    --dest=../fid-refs/cifar10.pkl \
     --metrics=mind,mind_dinov2 \
     --num-images=5000
