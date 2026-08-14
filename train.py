@@ -1,6 +1,7 @@
 import os
 import time
 import json
+import socket
 import warnings
 import click
 import torch
@@ -216,7 +217,12 @@ def setup_training_config(preset='fm-cifar10', **opts):
         interpolant_kwargs=dnnlib.EasyDict(**opts.interpolant_kwargs),
         use_fp16=opts.fp16,
     )
-    c.ema_kwargs = dict(class_name='training.phema.PowerFunctionEMA', stds=list(opts.phema_stds))
+    # EMA used for model snapshots: 'classic' = fixed per-step decay
+    # (DiT/JiT-style, default 0.9999), 'phema' = power-function EMA.
+    if opts.ema_type == 'classic':
+        c.ema_kwargs = dict(class_name='training.phema.FixedEMA', decay=opts.teacher_decay)
+    else:
+        c.ema_kwargs = dict(class_name='training.phema.PowerFunctionEMA', stds=list(opts.phema_stds))
     c.loss_kwargs = dnnlib.EasyDict(class_name='training.loss.FlowMatchingLoss', p_uncond=opts.p_uncond_labels)
     c.optimizer_kwargs = dnnlib.EasyDict(**opts.optimizer_kwargs)
     c.lr_kwargs = dnnlib.EasyDict(
@@ -269,6 +275,7 @@ def print_training_config(run_dir, pretrained_pkl, c):
     dist.print0('Training config:')
     dist.print0(json.dumps(c, indent=2))
     dist.print0()
+    dist.print0(f'Server:                  {socket.gethostname()}')
     dist.print0(f'Output directory:        {run_dir}')
     dist.print0(f'Pretrained model:        {pretrained_pkl}')
     dist.print0(f'Dataset path:            {c.dataset_kwargs.path}')
@@ -294,7 +301,10 @@ def launch_training(run_dir, pretrained_pkl, c):
         # training options file.
         _wait_for_path(options_path)
 
+    # Tee stdout/stderr into log.txt before printing the config so that
+    # everything shown in the console also ends up in the log.
     dnnlib.util.Logger(file_name=os.path.join(run_dir, 'log.txt'), file_mode='a', should_flush=True)
+    print_training_config(run_dir=run_dir, pretrained_pkl=pretrained_pkl, c=c)
     training.training_loop.training_loop(run_dir=run_dir, pretrained_pkl=pretrained_pkl, **c)
 
 #----------------------------------------------------------------------------
@@ -337,6 +347,8 @@ def parse_count(s):
 @click.option('--lr',               help='Learning rate max. (alpha_ref)', metavar='FLOAT',     type=click.FloatRange(min=0, min_open=True), default=None)
 @click.option('--max_clip_norm',    help='Max gradient norm for clipping (0 disables clipping but still logs grad norm)', metavar='FLOAT', type=click.FloatRange(min=0), default=None)
 @click.option('--p-uncond-labels',  help='Prob. of dropping labels for CFG training', metavar='FLOAT', type=click.FloatRange(min=0, max=1), default=None)
+@click.option('--ema-type',         help='EMA used for snapshots', metavar='classic|phema',     type=click.Choice(['classic', 'phema']), default='classic', show_default=True)
+@click.option('--teacher-decay',    help='Per-step decay for classic EMA', metavar='FLOAT',     type=click.FloatRange(min=0, max=1), default=0.9999, show_default=True)
 
 # Performance-related options.
 @click.option('--max-batch-gpu',    help='Limit batch size per GPU', metavar='NIMG',            type=parse_count, default=None, show_default=True)
@@ -348,15 +360,16 @@ def parse_count(s):
 @click.option('--bench',            help='Enable cuDNN benchmarking', metavar='BOOL',           type=bool, default=True, show_default=True)
 @click.option('--force-finite',     help='Zero NaN/Inf gradients before optimizer step',        metavar='BOOL', type=bool, default=True, show_default=True)
 
-# I/O-related options.
-@click.option('--status',           help='Interval of status prints (optimizer steps)', metavar='STEPS',     type=parse_count, default='512', show_default=True)
-@click.option('--snapshot',         help='Interval of network snapshots (optimizer steps)', metavar='STEPS', type=parse_count, default='32Ki', show_default=True)
-@click.option('--checkpoint',       help='Interval of training checkpoints (optimizer steps)', metavar='STEPS', type=parse_count, default='512Ki', show_default=True)
+# I/O-related options. Defaults are tuned for 4x A100 at batch size 512
+# (~0.4 s/step): status ~3 min, snapshots ~1 h, checkpoints ~2 h.
+@click.option('--status',           help='Interval of status prints (optimizer steps)', metavar='STEPS',     type=parse_count, default='1000', show_default=True)
+@click.option('--snapshot',         help='Interval of network snapshots (optimizer steps)', metavar='STEPS', type=parse_count, default='25000', show_default=True)
+@click.option('--checkpoint',       help='Interval of training checkpoints (optimizer steps)', metavar='STEPS', type=parse_count, default='50000', show_default=True)
 
 # Eval-metrics-related options.
-@click.option('--metrics',          help='Interval of FID/FD-DINOv2/MIND evaluation in optimizer steps. Disabled by default.', metavar='STEPS', type=parse_count, default=None, show_default=True)
+@click.option('--metrics',          help='Interval of FID/FD-DINOv2/MIND evaluation in optimizer steps. Disabled by default.', metavar='STEPS', type=parse_count, default='25000', show_default=True)
 @click.option('--metric-names',     help='Comma-separated list of metrics to compute (fid, fd_dinov2, mind, mind_dinov2)', metavar='LIST', type=str, default='fid', show_default=True)
-@click.option('--metric-num-samples', help='Number of generated samples for Fr\u00e9chet metrics (fid, fd_dinov2)', metavar='INT', type=click.IntRange(min=2), default=10000, show_default=True)
+@click.option('--metric-num-samples', help='Number of generated samples for Fr\u00e9chet metrics (fid, fd_dinov2)', metavar='INT', type=click.IntRange(min=2), default=20000, show_default=True)
 @click.option('--mind-num-samples', help='Number of generated samples for MIND metrics (mind, mind_dinov2)', metavar='INT', type=click.IntRange(min=2), default=5000, show_default=True)
 @click.option('--metric-ref',       help='Reference statistics .pkl/.npz', metavar='PATH', type=str, default='fid-refs/cifar10.pkl', show_default=True)
 @click.option('--metric-batch-size',help='Per-rank batch size for metric sampling/feature extraction', metavar='INT', type=click.IntRange(min=1), default=64, show_default=True)
@@ -397,8 +410,8 @@ def cmdline(outdir, pretrained_pkl, dry_run, **opts):
             with open(marker_path, 'rt') as f:
                 run_dir = f.read().strip()
 
-    print_training_config(run_dir=run_dir, pretrained_pkl=pretrained_pkl, c=c)
     if dry_run:
+        print_training_config(run_dir=run_dir, pretrained_pkl=pretrained_pkl, c=c)
         dist.print0('Dry run; exiting.')
     else:
         launch_training(run_dir=run_dir, pretrained_pkl=pretrained_pkl, c=c)

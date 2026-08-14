@@ -10,6 +10,7 @@ from torch_utils import distributed as dist
 from torch_utils import training_stats
 from torch_utils import misc
 import wandb
+from wandb.sdk.lib import runid as wandb_runid
 from training import monitoring
 from training import evaluation
 
@@ -128,14 +129,15 @@ def training_loop(
     )
     checkpoint.load_latest(run_dir)
     assert total_nimg > state.cur_nimg
-    dist.print0(f'Training from {state.cur_nimg // 1000} kimg to {total_nimg // 1000} kimg:')
+    dist.print0(f'Training from step {state.cur_step} to {total_nimg // batch_size} '
+                f'({state.cur_nimg // 1000} kimg to {total_nimg // 1000} kimg):')
     dist.print0()
 
     # Setup WandB (rank 0 only).
     wandb_run = None
     if dist.get_rank() == 0:
         if not state.get('wandb_run_id', None):
-            state.wandb_run_id = wandb.util.generate_id()
+            state.wandb_run_id = wandb_runid.generate_id()
         wandb_run = wandb.init(
             project='flow-matching',
             name=os.path.basename(run_dir),
@@ -161,10 +163,11 @@ def training_loop(
             **data_loader_kwargs
         )
     )
-    prev_status_nimg = state.cur_nimg
+    prev_status_step = state.cur_step
     cumulative_training_time = 0
     start_nimg = state.cur_nimg
     start_step = state.cur_step
+    total_steps = total_nimg // batch_size
     stats_jsonl = None
     step_stats = dnnlib.EasyDict()
 
@@ -180,20 +183,22 @@ def training_loop(
             state.total_elapsed_time += cur_time - prev_status_time
             cur_process = psutil.Process(os.getpid())
             cpu_memory_usage = sum(p.memory_info().rss for p in [cur_process] + cur_process.children(recursive=True))
+            sec_per_step = cumulative_training_time / max(state.cur_step - prev_status_step, 1)
+            remaining_steps = max(total_steps - state.cur_step, 0)
+            remaining_time = remaining_steps * sec_per_step
             dist.print0(' '.join(['Status:',
-                'kimg',         f"{training_stats.report0('Progress/kimg',                              state.cur_nimg / 1e3):<9.1f}",
-                'time',         f"{dnnlib.util.format_time(training_stats.report0('Timing/total_sec',   state.total_elapsed_time)):<12s}",
-                'sec/tick',     f"{training_stats.report0('Timing/sec_per_tick',                        cur_time - prev_status_time):<8.2f}",
-                'sec/kimg',     f"{training_stats.report0('Timing/sec_per_kimg',                        cumulative_training_time / max(state.cur_nimg - prev_status_nimg, 1) * 1e3):<7.3f}",
-                'maintenance',  f"{training_stats.report0('Timing/maintenance_sec',                     cur_time - prev_status_time - cumulative_training_time):<7.2f}",
-                'cpumem',       f"{training_stats.report0('Resources/cpu_mem_gb',                       cpu_memory_usage / 2**30):<6.2f}",
-                'gpumem',       f"{training_stats.report0('Resources/peak_gpu_mem_gb',                  torch.cuda.max_memory_allocated(device) / 2**30):<6.2f}",
-                'reserved',     f"{training_stats.report0('Resources/peak_gpu_mem_reserved_gb',         torch.cuda.max_memory_reserved(device) / 2**30):<6.2f}",
+                'nsteps',           f"{training_stats.report0('Progress/step',                          state.cur_step):<9d}",
+                'nimgs',            f"{training_stats.report0('Progress/nimg',                          state.cur_nimg):<11d}",
+                'time',             f"{dnnlib.util.format_time(training_stats.report0('Timing/total_sec', state.total_elapsed_time)):<12s}",
+                'sec/step',         f"{training_stats.report0('Timing/sec_per_step',                    sec_per_step):<7.3f}",
+                'remaining_steps',  f"{training_stats.report0('Progress/remaining_steps',               remaining_steps):<9d}",
+                'remaining_time',   f"{dnnlib.util.format_time(training_stats.report0('Timing/remaining_sec', remaining_time)):<12s}",
+                'cpumem',           f"{training_stats.report0('Resources/cpu_mem_gb',                   cpu_memory_usage / 2**30):<6.2f}",
+                'gpumem',           f"{training_stats.report0('Resources/peak_gpu_mem_gb',              torch.cuda.max_memory_allocated(device) / 2**30):<6.2f}",
+                'reserved',         f"{training_stats.report0('Resources/peak_gpu_mem_reserved_gb',     torch.cuda.max_memory_reserved(device) / 2**30):<6.2f}",
             ]))
-            sec_per_tick = cur_time - prev_status_time
-            sec_per_kimg = cumulative_training_time / max(state.cur_nimg - prev_status_nimg, 1) * 1e3
             cumulative_training_time = 0
-            prev_status_nimg = state.cur_nimg
+            prev_status_step = state.cur_step
             prev_status_time = cur_time
             torch.cuda.reset_peak_memory_stats()
 
@@ -202,7 +207,7 @@ def training_loop(
             if dist.get_rank() == 0:
                 if stats_jsonl is None:
                     stats_jsonl = open(os.path.join(run_dir, 'stats.jsonl'), 'at')
-                fmt = {'Progress/tick': '%.0f', 'Progress/kimg': '%.3f', 'timestamp': '%.3f'}
+                fmt = {'Progress/step': '%.0f', 'Progress/nimg': '%.0f', 'Progress/remaining_steps': '%.0f', 'timestamp': '%.3f'}
                 items = [(name, value.mean) for name, value in training_stats.default_collector.as_dict().items()] + [('timestamp', time.time())]
                 items = [f'"{name}": ' + (fmt.get(name, '%g') % value if np.isfinite(value) else 'NaN') for name, value in items]
                 stats_jsonl.write('{' + ', '.join(items) + '}\n')
@@ -237,8 +242,8 @@ def training_loop(
                     'weighted_loss': step_stats.get('weighted_loss', float('nan')),
                     'logvar': step_stats.get('logvar', float('nan')),
                     'clip_coef': step_stats.get('clip_coef', float('nan')),
-                    'sec_per_tick': sec_per_tick,
-                    'sec_per_kimg': sec_per_kimg,
+                    'sec_per_step': sec_per_step,
+                    'remaining_hours': remaining_time / 3600.0,
                 }
                 plot_caption = (
                     f"nimg: {state.cur_nimg}, "
@@ -260,7 +265,7 @@ def training_loop(
                 )
 
             # Update progress and check for abort.
-            dist.update_progress(state.cur_nimg // 1000, total_nimg // 1000)
+            dist.update_progress(state.cur_step, total_steps)
             if dist.should_stop() or dist.should_suspend():
                 done = True
 
@@ -306,7 +311,7 @@ def training_loop(
 
                 if dist.get_rank() == 0 and metric_results is not None:
                     msg = ', '.join(f'{k}={v:g}' for k, v in metric_results.items())
-                    dist.print0(f'Metrics @ kimg {state.cur_nimg/1e3:.1f}: {msg} '
+                    dist.print0(f'Metrics @ step {state.cur_step} (kimg {state.cur_nimg/1e3:.1f}): {msg} '
                                 f'(took {metric_elapsed:.1f}s)')
                     if wandb_run is not None:
                         monitoring.log_to_wandb(
@@ -320,8 +325,9 @@ def training_loop(
                 # Don't count the eval time as training time on the next tick.
                 prev_status_time = time.time()
 
-        # Save model snapshot.
-        if snapshot_nimg is not None and state.cur_nimg % snapshot_nimg == 0 and (state.cur_nimg != start_nimg or start_nimg == 0) and dist.get_rank() == 0:
+        # Save model snapshot. Never at the very start of the run, always at
+        # the very end (even when total_nimg is not a multiple of snapshot_nimg).
+        if snapshot_nimg is not None and (done or state.cur_nimg % snapshot_nimg == 0) and state.cur_nimg != start_nimg and dist.get_rank() == 0:
             ema_list = ema.get() if ema is not None else optimizer.get_ema(model) if hasattr(optimizer, 'get_ema') else model
             ema_list = ema_list if isinstance(ema_list, list) else [(ema_list, '')]
             for ema_model, ema_suffix in ema_list:

@@ -1,12 +1,6 @@
 # Flow Matching Training
 
-A multi-GPU training pipeline for flow-matching generative models on images
-(pixels or VAE latents), with mixed-precision training, post-hoc EMA, and
-W&B logging.
-The infrastructure (`dnnlib`, `torch_utils`, the U-Net architectures in
-`training/networks.py`, post-hoc EMA, `dataset_tool.py`, FID/FD-DINOv2
-metrics, and persistence-based pickling) is borrowed from NVIDIA's
-[EDM2](https://github.com/NVlabs/edm2). The flow-matching model, loss, samplers, and configuration layout sit on top.
+A multi-GPU training pipeline for flow-matching generative models on images (pixels or VAE latents), with mixed-precision training, EMA, and W&B logging. The infrastructure (`dnnlib`, `torch_utils`, the U-Net architectures in `training/networks.py`, post-hoc EMA, `dataset_tool.py`, FID/FD-DINOv2 metrics, and persistence-based pickling) is borrowed from NVIDIA's [EDM2](https://github.com/NVlabs/edm2).
 
 ## Layout
 
@@ -24,7 +18,7 @@ metrics, and persistence-based pickling) is borrowed from NVIDIA's
 │   ├── networks.py            # SongUNet / DhariwalUNet (from EDM).
 │   ├── encoders.py            # StandardRGB and Stability VAE encoders.
 │   ├── schedulers.py          # LR schedules.
-│   ├── phema.py               # Power-function and traditional EMA.
+│   ├── ema.py                 # EMA.
 │   ├── monitoring.py          # W&B logging helpers.
 │   └── dataset.py             # Streaming image dataset (zip or folder).
 ├── torch_utils/               # Distributed, persistence, training stats (EDM).
@@ -35,6 +29,8 @@ metrics, and persistence-based pickling) is borrowed from NVIDIA's
 ├── fid-refs/                  # Reference statistics for FID/FD-DINOv2.
 └── out/                       # Generated images.
 ```
+
+
 
 ## Setup
 
@@ -73,12 +69,9 @@ torchrun --standalone --nproc_per_node=1 train.py \
     --preset=fm-cifar10
 ```
 
-Each launch creates a timestamped subdirectory inside `--outdir` (e.g.
-`training-runs/cifar10/260423_160712_fm-cifar10`). Pointing `--outdir` at
-an existing run that contains a `training-state-*.pt` resumes from the
-latest checkpoint.
+Each launch creates a timestamped subdirectory inside `--outdir` (e.g. `training-runs/cifar10/260423_160712_fm-cifar10`). Pointing `--outdir` at an existing run that contains a `training-state-*.pt` resumes from the latest checkpoint.
 
-### 3. Reconstruct post-hoc EMA snapshots (optional)
+### 3. Reconstruct post-hoc EMA snapshots (optional, if phEMA was used)
 
 ```bash
 python reconstruct_phema.py \
@@ -99,41 +92,27 @@ bash scripts/metrics/ref50k.sh
 bash scripts/metrics/gen50k.sh
 ```
 
-### 6. Compute FID / FD-DINOv2
+### 6. Compute FID / FD-DINOv2 / MIND / MIND-DINOv2
 
 ```bash
 bash scripts/metrics/fid50k.sh
 ```
 
+
+
 ## Adding a new training run
 
-The configuration is split into two preset dictionaries at the top of
-`train.py`:
+The configuration is split into two preset dictionaries at the top of `train.py`:
 
-- `**dataset_presets**` holds everything intrinsic to the data:
-`sigma_data`, the network architecture (`net_kwargs`), the sampler used
-during monitoring (`sampler_kwargs`), and the LR scheduler family
-(`lr_scheduler_kwargs`).
-- `**config_presets**` describes a particular training run on top of a
-dataset: which dataset to use, conditional vs unconditional, total
-`nimg`, batch size, prediction target (`x` or `v`), classifier-free
-guidance dropout, channel width, dropout, base LR, and gradient clipping.
-Adding a new run is mostly a matter of editing those two dictionaries and
-pointing `--preset` / `--data` at the new entry. Per-run overrides are
-exposed as CLI flags on `train.py`. The two dictionaries are required to
-have disjoint keys (asserted at startup) so it's always clear which preset
-a knob lives in.
+- `**dataset_presets**` holds everything intrinsic to the data:`sigma_data`, the network architecture (`net_kwargs`), the sampler used during monitoring (`sampler_kwargs`), and the LR scheduler family (`lr_scheduler_kwargs`).
+- `**config_presets**` describes a particular training run on top of a dataset: which dataset to use, conditional vs unconditional, total `nimg`, batch size, prediction target (`x` or `v`), classifier-free guidance dropout, channel width, dropout, base LR, and gradient clipping. Adding a new run is mostly a matter of editing those two dictionaries and pointing `--preset` / `--data` at the new entry. Per-run overrides are exposed as CLI flags on `train.py`. The two dictionaries are required to have disjoint keys (asserted at startup) so it's always clear which preset a knob lives in.
+
+
 
 ## Monitoring
 
-Loss, learning rate, gradient norm, gradient-clip coefficient, and timing
-counters are pushed to W&B at every `--status` interval, alongside a grid
-of samples generated from the EMA model with the dataset's configured
-sampler. Scalar metrics are duplicated against three x-axes (training
-step, images seen, wall-clock time); plots are tied to the training step
-axis.
+Loss, learning rate, gradient norm, gradient-clip coefficient, and timing counters are pushed to W&B at every `--status` interval, alongside a grid of samples generated from the EMA model with the dataset's configured sampler. Scalar metrics are duplicated against three x-axes (training step, images seen, wall-clock time); plots are tied to the training step axis.
 
 ## Credits
 
-Built on top of NVIDIA's [EDM](https://github.com/NVlabs/edm) and
-[EDM2](https://github.com/NVlabs/edm2).
+Built on top of NVIDIA's [EDM](https://github.com/NVlabs/edm) and [EDM2](https://github.com/NVlabs/edm2).

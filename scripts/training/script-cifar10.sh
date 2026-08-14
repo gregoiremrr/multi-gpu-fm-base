@@ -7,17 +7,22 @@ export NCCL_NET=Socket
 export NCCL_SOCKET_IFNAME=lo
 export NCCL_IB_DISABLE=1
 
-torchrun --standalone --nproc_per_node=2 train.py \
+# Intervals are in optimizer steps, tuned for 4x A100 at batch size 512
+# (~0.4 s/step, measured from the self-flow-torch run on this server):
+# status ~3 min, snapshot/metrics ~1 h, checkpoint ~2 h.
+torchrun --standalone --nproc_per_node=4 train.py \
     --outdir=training-runs/cifar10 \
-    --data=datasets/cifar10.zip \
+    --data=../datasets/cifar10.zip \
     --preset=fm-cifar10-trig \
     --max-batch-gpu=256 \
     --no-fp16 \
-    --status=40 \
-    --snapshot=2Ki \
-    --checkpoint=4Ki \
-    --metrics=12Ki \
-    --metric-names=fid \
-    --metric-num-samples=10000 \
-    --metric-ref=fid-refs/cifar10.pkl \
-    --metric-batch-size=512
+    --status=1000 \
+    --snapshot=25000 \
+    --checkpoint=50000 \
+    --metrics=25000 \
+    --metric-names=fid,fd_dinov2,mind,mind_dinov2 \
+    --metric-num-samples=20000 \
+    --mind-num-samples=5000 \
+    --metric-ref=../fid-refs/cifar10.pkl \
+    --metric-batch-size=512 \
+    "$@"

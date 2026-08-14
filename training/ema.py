@@ -160,3 +160,38 @@ class TraditionalEMA:
         self.ema.load_state_dict(state)
 
 #----------------------------------------------------------------------------
+# Fixed per-optimizer-step EMA. This is the standard decay=0.9999 formulation
+# used by DiT, JiT, and Self-Flow.
+
+class FixedEMA:
+    @torch.no_grad()
+    def __init__(self, model, decay=0.9999):
+        self.model = model
+        self.decay = float(decay)
+        self.ema = copy.deepcopy(model).eval().requires_grad_(False)
+
+    @torch.no_grad()
+    def reset(self):
+        for p_model, p_ema in zip(self.model.parameters(), self.ema.parameters()):
+            p_ema.copy_(p_model)
+
+    @torch.no_grad()
+    def update(self, cur_nimg=None, batch_size=None):
+        del cur_nimg, batch_size # unused; the decay is per optimizer step
+        for p_model, p_ema in zip(self.model.parameters(), self.ema.parameters()):
+            p_ema.lerp_(p_model, 1.0 - self.decay)
+        for b_model, b_ema in zip(self.model.buffers(), self.ema.buffers()):
+            b_ema.copy_(b_model)
+
+    @torch.no_grad()
+    def get(self):
+        return self.ema
+
+    def state_dict(self):
+        return dict(decay=self.decay, ema=self.ema.state_dict())
+
+    def load_state_dict(self, state):
+        self.decay = float(state['decay'])
+        self.ema.load_state_dict(state['ema'])
+
+#----------------------------------------------------------------------------
